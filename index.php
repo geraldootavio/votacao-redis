@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 require_once __DIR__ . '/redis.php';
+const DURACAO_VOTACAO = 600;
+
 try {
     $redis = conectarRedis();
     $redis->ping();
@@ -18,6 +20,11 @@ if (!$redis->exists('votacao:bancos')) {
     foreach ($opcoesPermitidas as $opcao) {
         $redis->zadd('votacao:bancos', [$opcao => 0]);
     }
+    $redis->setex(
+        'votacao:aberta',
+        DURACAO_VOTACAO,
+        '1'
+    );
 }
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $acao = $_POST['acao'] ?? 'votar';
@@ -27,6 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'votacao:total',
             'votacao:participantes',
             'votacao:historico',
+            'votacao:aberta',
         ]);
         header('Location: index.php?status=zerada');
         exit;
@@ -39,6 +47,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if (!preg_match('/^[a-z0-9._-]{3,30}$/', $participante)) {
         header('Location: index.php?status=participante-invalido');
+        exit;
+    }
+    if (!$redis->exists('votacao:aberta')) {
+        header('Location: index.php?status=encerrada');
         exit;
     }
     $novoParticipante = (int) $redis->sadd(
@@ -88,6 +100,9 @@ $totalOpcoes = (int) $redis->zcard(
 $totalHistorico = (int) $redis->llen(
     'votacao:historico'
 );
+$tempoRestante = (int) $redis->ttl(
+    'votacao:aberta'
+);
 $nomeLider = null;
 $votosLider = 0;
 foreach ($ranking as $banco => $votos) {
@@ -102,8 +117,15 @@ $mensagens = [
     'zerada' => 'A votação foi zerada.',
     'participante-invalido' => 'Informe um código de participante válido.',
     'duplicado' => 'Este participante já registrou um voto.',
+    'encerrada' => 'O prazo desta votação foi encerrado.',
 ];
 $mensagem = $mensagens[$status] ?? '';
+$minutos = $tempoRestante > 0
+    ? intdiv($tempoRestante, 60)
+    : 0;
+$segundos = $tempoRestante > 0
+    ? $tempoRestante % 60
+    : 0;
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -121,39 +143,50 @@ $mensagem = $mensagens[$status] ?? '';
     <main class="container">
         <section class="cartao">
             <h1>Votação em tempo real</h1>
-            <form method="post" class="formulario">
+            <?php if ($tempoRestante > 0): ?>
+                <p class="tempo">
+                    Tempo restante:
+                    <?= $minutos ?> min <?= $segundos ?> s
+                </p>
+                <form method="post" class="formulario">
 
-                <label for="participante">
-                    Código do participante
-                </label>
-
-                <input
-                    class="campo-texto"
-                    type="text"
-                    id="participante"
-                    name="participante"
-                    minlength="3"
-                    maxlength="30"
-                    pattern="[A-Za-z0-9._-]{3,30}"
-                    placeholder="Ex.: aluno07"
-                    required>
-
-                <?php foreach ($opcoesPermitidas as $opcao): ?>
-                    <label class="opcao">
-                        <input
-                            type="radio"
-                            name="opcao"
-                            value="<?= htmlspecialchars($opcao) ?>"
-                            required>
-                        <?= htmlspecialchars($opcao) ?>
+                    <label for="participante">
+                        Código do participante
                     </label>
-                <?php endforeach; ?>
 
-                <button type="submit">
-                    Registrar voto
-                </button>
+                    <input
+                        class="campo-texto"
+                        type="text"
+                        id="participante"
+                        name="participante"
+                        minlength="3"
+                        maxlength="30"
+                        pattern="[A-Za-z0-9._-]{3,30}"
+                        placeholder="Ex.: aluno07"
+                        required>
 
-            </form>
+                    <?php foreach ($opcoesPermitidas as $opcao): ?>
+                        <label class="opcao">
+                            <input
+                                type="radio"
+                                name="opcao"
+                                value="<?= htmlspecialchars($opcao) ?>"
+                                required>
+                            <?= htmlspecialchars($opcao) ?>
+                        </label>
+                    <?php endforeach; ?>
+
+                    <button type="submit">
+                        Registrar voto
+                    </button>
+
+                </form>
+            <?php else: ?>
+                <p class="encerrada">
+                    A votação está encerrada.
+                    Reinicie para abrir um novo prazo.
+                </p>
+            <?php endif; ?>
         </section>
         <section class="cartao">
             <h2>Ranking atual</h2>
